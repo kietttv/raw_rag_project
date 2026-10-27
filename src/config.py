@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: SecretStr = Field(..., min_length=1, description="Gemini API key")
     VECTOR_DB_URL: str = Field(..., min_length=1, description="Vector database connection URL")
     EMBEDDING_MODEL_NAME: str = Field(..., min_length=1, description="Embedding model name")
+    EMBEDDING_DIMENSION: int = Field(768, gt=0, le=3072, description="Output dimensionality of embeddings")
+    EMBEDDING_BATCH_SIZE: int = Field(100, gt=0, le=100, description="Number of texts per embed request")
     CHUNK_SIZE: int = Field(..., gt=0, description="Size of each chunk")
     CHUNK_OVERLAP: int = Field(..., ge=0, description="Overlap between consecutive chunks")
     CHROMA_COLLECTION_NAME: str = Field("documents", min_length=3, description="ChromaDB collection name")
@@ -39,5 +41,7 @@ def get_settings() -> Settings:
     """Trả về instance Settings (cache, chỉ đọc .env một lần)."""
     return Settings()
 
+
+settings = get_settings()
 
 settings = get_settings()

@@ -1,0 +1,15 @@
+Kiến trúc Retrieval-Augmented Generation (RAG)
+
+1. Tổng quan
+Retrieval-Augmented Generation (RAG) là một kỹ thuật tiên tiến kết hợp giữa mô hình ngôn ngữ lớn (LLM) và hệ thống tìm kiếm thông tin bên ngoài. Thay vì phụ thuộc hoàn toàn vào tri thức tĩnh được nén trong trọng số của LLM, RAG cho phép truy xuất các đoạn văn bản liên quan từ cơ sở tri thức động và cung cấp chúng làm ngữ cảnh (context) cho mô hình sinh câu trả lời.
+
+2. Các thành phần chính trong Core Pipeline
+- Document Ingestion: Đọc tài liệu từ các định dạng khác nhau (PDF, TXT, DOCX), trích xuất văn bản thô và phân tách thành các đoạn nhỏ (chunks) theo kích thước và độ gối đầu phù hợp.
+- Embedding Generation: Sử dụng mô hình nhúng (ví dụ: Google Gemini gemini-embedding-001) để biến đổi các đoạn văn bản thành vector biểu diễn ngữ nghĩa trong không gian nhiều chiều.
+- Vector Storage: Lưu trữ các vector và văn bản gốc vào cơ sở dữ liệu vector chuyên dụng như ChromaDB, Pinecone hoặc Qdrant với độ đo khoảng cách (Cosine distance / Cosine similarity).
+- Retrieval: Khi người dùng đưa ra câu hỏi, câu hỏi được nhúng thành vector và tìm kiếm k vector gần nhất (k-Nearest Neighbors) trong cơ sở dữ liệu.
+- Generation: Kết hợp câu hỏi và các đoạn văn bản truy xuất được vào một prompt định dạng chuẩn để LLM sinh câu trả lời chính xác, kèm trích dẫn nguồn rõ ràng.
+
+3. Lợi ích của RAG
+RAG giúp giảm thiểu hiện tượng ảo giác (hallucination), cung cấp câu trả lời có bằng chứng xác thực, dễ dàng cập nhật tri thức mới mà không cần huấn luyện lại (fine-tuning) mô hình và bảo vệ dữ liệu nhạy cảm của doanh nghiệp.
+
