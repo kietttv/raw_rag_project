@@ -1,0 +1,43 @@
+"""Quản lý cấu hình hệ thống, đọc từ file .env bằng pydantic-settings."""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Thư mục gốc của project (chứa file .env)
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    """Các biến môi trường bắt buộc của ứng dụng RAG."""
+
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    GEMINI_API_KEY: SecretStr = Field(..., min_length=1, description="Gemini API key")
+    VECTOR_DB_URL: str = Field(..., min_length=1, description="Vector database connection URL")
+    EMBEDDING_MODEL_NAME: str = Field(..., min_length=1, description="Embedding model name")
+    CHUNK_SIZE: int = Field(..., gt=0, description="Size of each chunk")
+    CHUNK_OVERLAP: int = Field(..., ge=0, description="Overlap between consecutive chunks")
+    CHROMA_COLLECTION_NAME: str = Field("documents", min_length=3, description="ChromaDB collection name")
+
+    @model_validator(mode="after")
+    def _check_chunk_overlap(self) -> "Settings":
+        if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
+            raise ValueError("CHUNK_OVERLAP should be smaller than CHUNK_SIZE")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Trả về instance Settings (cache, chỉ đọc .env một lần)."""
+    return Settings()
+
+
+settings = get_settings()
