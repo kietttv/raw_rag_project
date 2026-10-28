@@ -29,14 +29,32 @@ from src.core.retriever import retrieve
 from src.models.schemas import ChatMessage, ChatResponse, SourceDocument
 from src.utils.logger import logger
 
-RAG_SYSTEM_INSTRUCTION = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp.
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def _load_prompt_file(filename: str, fallback_default: str) -> str:
+    """Load prompt template from src/prompts directory with safe fallback."""
+    target_file = PROMPTS_DIR / filename
+    try:
+        if target_file.is_file():
+            content = target_file.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+    except Exception as exc:
+        logger.bind(file=filename, error=str(exc)).warning(
+            "Failed to read prompt file; using fallback prompt"
+        )
+    return fallback_default.strip()
+
+
+_DEFAULT_RAG_SYSTEM_INSTRUCTION = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp.
 
 HƯỚNG DẪN TRẢ LỜI:
 1. Chỉ sử dụng thông tin có trong phần NGỮ CẢNH để trả lời câu hỏi.
 2. Trả lời chính xác, rõ ràng, trung thực và có tính dẫn chứng theo tài liệu.
 3. Nếu ngữ cảnh không chứa đủ thông tin để trả lời câu hỏi, hãy nói rõ: "Tài liệu được cung cấp không có đủ thông tin để trả lời câu hỏi này." Tuyệt đối không tự suy diễn hoặc bịa đặt thông tin."""
 
-RAG_PROMPT_TEMPLATE = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp dưới đây.
+_DEFAULT_RAG_PROMPT_TEMPLATE = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp dưới đây.
 
 NGỮ CẢNH (Context):
 {context}
@@ -51,13 +69,18 @@ HƯỚNG DẪN TRẢ LỜI:
 
 CÂU TRẢ LỜI:"""
 
-RAG_CACHED_PROMPT_TEMPLATE = """NGỮ CẢNH TRUY XUẤT (Retrieved Context):
+_DEFAULT_RAG_CACHED_PROMPT_TEMPLATE = """NGỮ CẢNH TRUY XUẤT (Retrieved Context):
 {context}
 {history_block}
 CÂU HỎI (Question):
 {question}
 
 CÂU TRẢ LỜI:"""
+
+# Dynamically loaded prompts from src/prompts/ with safe fallback
+RAG_SYSTEM_INSTRUCTION = _load_prompt_file("system_instruction.txt", _DEFAULT_RAG_SYSTEM_INSTRUCTION)
+RAG_PROMPT_TEMPLATE = _load_prompt_file("rag_prompt.txt", _DEFAULT_RAG_PROMPT_TEMPLATE)
+RAG_CACHED_PROMPT_TEMPLATE = _load_prompt_file("rag_cached_prompt.txt", _DEFAULT_RAG_CACHED_PROMPT_TEMPLATE)
 
 
 class _ContextCacheState:

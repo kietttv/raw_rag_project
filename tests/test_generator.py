@@ -301,3 +301,15 @@ def test_load_static_context_file(tmp_path) -> None:
     assert generator.load_static_context("non_existent_path.txt") == ""
 
 
+def test_load_prompt_file_and_fallback() -> None:
+    """_load_prompt_file reads prompt from file and falls back to default if file is missing."""
+    # Existing prompt file
+    system_inst = generator._load_prompt_file("system_instruction.txt", "fallback text")
+    assert "Bạn là trợ lý AI trả lời câu hỏi" in system_inst
+
+    # Missing file uses fallback
+    fallback_result = generator._load_prompt_file("non_existent_prompt.txt", "my custom fallback")
+    assert fallback_result == "my custom fallback"
+
+
+
