@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     GENERATION_TEMPERATURE: float = Field(0.2, ge=0.0, le=2.0, description="Temperature for generation")
     UPLOAD_DIR: str = Field("data/uploads", description="Directory for temporary file uploads")
     MAX_UPLOAD_MB: int = Field(20, gt=0, description="Maximum allowed upload file size in megabytes")
+    MAX_HISTORY_TURNS: int = Field(6, ge=0, description="Max previous chat turns included in prompt")
 
 
     @model_validator(mode="after")

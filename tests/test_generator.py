@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.core import generator
-from src.models.schemas import ChatResponse, SourceDocument
+from src.models.schemas import ChatMessage, ChatResponse, SourceDocument
 
 
 def test_format_context_empty() -> None:
@@ -141,4 +141,48 @@ def test_generator_cli_execution(capsys: pytest.CaptureFixture[str]) -> None:
         assert "SOURCES CITED (1 references):" in captured.out
         assert "Score: 0.9600 | Source: vietnam.txt" in captured.out
         assert "Chunk ID: c_hanoi" in captured.out
+
+
+def test_build_prompt_with_history() -> None:
+    """build_prompt correctly embeds conversation history."""
+    docs = [
+        SourceDocument(
+            content="ChromaDB is an open-source vector store.",
+            metadata={"file_name": "chroma.txt"},
+        )
+    ]
+    history = [
+        ChatMessage(role="user", content="Tôi là ai?"),
+        ChatMessage(role="assistant", content="Bạn là người dùng hệ thống."),
+    ]
+    prompt = generator.build_prompt("ChromaDB là gì?", docs, history=history)
+
+    assert "LỊCH SỬ HỘI THOẠI" in prompt
+    assert "Người dùng: Tôi là ai?" in prompt
+    assert "Trợ lý: Bạn là người dùng hệ thống." in prompt
+    assert "ChromaDB is an open-source vector store." in prompt
+    assert "ChromaDB là gì?" in prompt
+
+
+def test_stream_answer_yields_tokens() -> None:
+    """stream_answer yields individual token chunks from stream."""
+    docs = [
+        SourceDocument(
+            content="Sample text",
+            metadata={"file_name": "sample.txt"},
+        )
+    ]
+    chunk1 = MagicMock()
+    chunk1.text = "Xin "
+    chunk2 = MagicMock()
+    chunk2.text = "chào!"
+    chunk3 = MagicMock()
+    chunk3.text = ""  # Should be skipped
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content_stream.return_value = [chunk1, chunk2, chunk3]
+
+    with patch("src.core.generator.get_genai_client", return_value=mock_client):
+        tokens = list(generator.stream_answer("Chào bạn", docs))
+        assert tokens == ["Xin ", "chào!"]
 

@@ -27,6 +27,9 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User question")
     history: list[ChatMessage] = Field(default_factory=list, description="Previous conversation turns")
     top_k: int = Field(5, ge=1, le=50, description="Number of chunks to retrieve")
+    collection_name: str | None = Field(None, description="Target ChromaDB collection (defaults to settings)")
+    min_score: float | None = Field(None, ge=-1.0, le=1.0, description="Minimum relevance score threshold")
+    stream: bool = Field(False, description="Stream response tokens in real-time via Server-Sent Events")
 
 
 class ChatResponse(BaseModel):
