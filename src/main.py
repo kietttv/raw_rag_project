@@ -27,6 +27,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     upload_path.mkdir(parents=True, exist_ok=True)
     yield
     logger.info("Shutting down Core RAG API service...")
+    from src.services.tracing import flush_tracing
+
+    flush_tracing()
 
 
 app = FastAPI(

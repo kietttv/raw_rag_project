@@ -37,6 +37,32 @@ class ChatResponse(BaseModel):
 
     answer: str = Field(..., description="Generated answer from LLM")
     sources: list[SourceDocument] = Field(default_factory=list, description="Source chunks used as context")
+    trace_id: str | None = Field(None, description="Observability trace ID for this query interaction")
+
+
+class FeedbackScore(int, Enum):
+    """User feedback rating score."""
+
+    THUMBS_DOWN = -1
+    NEUTRAL = 0
+    THUMBS_UP = 1
+
+
+class ChatFeedbackRequest(BaseModel):
+    """Payload to record user rating on a specific chat answer."""
+
+    trace_id: str = Field(..., min_length=1, description="Trace ID or Request ID of the chat turn")
+    score: int = Field(..., ge=-1, le=1, description="1 for thumbs-up, -1 for thumbs-down, 0 for neutral")
+    comment: str | None = Field(None, max_length=1000, description="Optional user feedback comment")
+
+
+class ChatFeedbackResponse(BaseModel):
+    """Response payload acknowledging feedback recorded."""
+
+    status: str = Field("success", description="Status confirmation")
+    trace_id: str = Field(..., description="Target trace ID")
+    score: int = Field(..., description="Recorded score")
+    message: str = Field("Feedback recorded successfully", description="Status summary")
 
 
 class DocumentInput(BaseModel):
