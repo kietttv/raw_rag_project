@@ -373,10 +373,16 @@ def generate_answer(
         cached=bool(cached_content_name),
     ).info("Successfully generated RAG answer")
 
-    return ChatResponse(
+    raw_response = ChatResponse(
         answer=answer,
         sources=sources,
     )
+    if settings.ENABLE_OUTPUT_GUARD:
+        from src.guardrails.output_guard import apply_output_guard
+
+        return apply_output_guard(raw_response)
+
+    return raw_response
 
 
 def stream_answer(

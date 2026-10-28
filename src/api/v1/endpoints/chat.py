@@ -15,6 +15,11 @@ from src.guardrails.input_guard import (
     InputGuardViolationError,
     validate_chat_input,
 )
+from src.guardrails.output_guard import (
+    FALLBACK_NO_INFO_MESSAGE,
+    apply_output_guard,
+    sanitize_sources,
+)
 from src.models.schemas import (
     ChatMessage,
     ChatRequest,
@@ -39,16 +44,23 @@ def _generate_sse_stream(
     history: list[ChatMessage],
 ) -> Iterator[str]:
     """Yield SSE events for sources, tokens, and completion/error signal."""
-    # 1. Send retrieved sources first
-    sources_data = [s.model_dump() for s in sources]
+    # 1. Sanitize and send retrieved sources first
+    clean_sources = sanitize_sources(sources) if settings.ENABLE_OUTPUT_GUARD else sources
+    sources_data = [s.model_dump() for s in clean_sources]
     yield _format_sse("sources", sources_data)
 
     total_chars = 0
     try:
         # 2. Stream tokens from LLM
-        for token in stream_answer(query=query, sources=sources, history=history):
+        for token in stream_answer(query=query, sources=clean_sources, history=history):
             total_chars += len(token)
             yield _format_sse("token", {"text": token})
+
+        # 2b. Check for empty hallucination in stream
+        if total_chars == 0 and settings.ENABLE_OUTPUT_GUARD:
+            fallback = FALLBACK_NO_INFO_MESSAGE
+            total_chars = len(fallback)
+            yield _format_sse("token", {"text": fallback})
 
         # 3. Send completion event
         yield _format_sse("done", {"answer_length": total_chars})
@@ -153,6 +165,9 @@ def chat_endpoint(request: ChatRequest):
                 sources=sources,
                 history=trimmed_history,
             )
+            if settings.ENABLE_OUTPUT_GUARD:
+                resp = apply_output_guard(resp)
+
             if not trimmed_history and settings.ENABLE_QUERY_CACHE:
                 cache_service.set_cached_response(
                     query=clean_query,

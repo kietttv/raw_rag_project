@@ -76,6 +76,19 @@ class Settings(BaseSettings):
         "",
         description="Comma-separated list of custom out-of-scope keywords or topics to block",
     )
+    ENABLE_OUTPUT_GUARD: bool = Field(
+        True,
+        description="Enable output guardrail for PII masking and hallucination checks",
+    )
+    MASK_PII_IN_SOURCES: bool = Field(
+        True,
+        description="Also redact PII (phone, ID, email) inside returned source snippets",
+    )
+    MIN_ANSWER_LENGTH: int = Field(
+        3,
+        ge=1,
+        description="Minimum meaningful alphanumeric character length of generated answer",
+    )
 
 
     @model_validator(mode="after")
