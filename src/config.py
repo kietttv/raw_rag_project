@@ -55,6 +55,27 @@ class Settings(BaseSettings):
     ENABLE_SEMANTIC_CACHE: bool = Field(False, description="Enable semantic similarity matching in Redis query cache")
     SEMANTIC_CACHE_THRESHOLD: float = Field(0.92, gt=0.0, le=1.0, description="Minimum cosine similarity for semantic cache hit")
     SEMANTIC_CACHE_MAX_ENTRIES: int = Field(200, gt=0, description="Max cached embeddings per collection for semantic search")
+    ENABLE_INPUT_GUARD: bool = Field(True, description="Enable input guardrail validation for queries")
+    MIN_QUERY_LENGTH: int = Field(2, ge=1, description="Minimum allowed query character length")
+    MAX_QUERY_LENGTH: int = Field(2000, gt=0, le=10000, description="Maximum allowed query character length")
+    ENFORCE_LATIN_SCRIPT: bool = Field(
+        True,
+        description="Enforce Latin/Vietnamese Unicode script ratio to block unsupported foreign scripts",
+    )
+    MIN_LATIN_RATIO: float = Field(
+        0.70,
+        ge=0.0,
+        le=1.0,
+        description="Minimum ratio of Latin/Vietnamese alphabetic characters among all letters",
+    )
+    ENABLE_LLM_INPUT_GUARD: bool = Field(
+        False,
+        description="Enable multilingual semantic input classification via Gemini LLM",
+    )
+    BLOCKED_TOPICS: str = Field(
+        "",
+        description="Comma-separated list of custom out-of-scope keywords or topics to block",
+    )
 
 
     @model_validator(mode="after")
@@ -65,6 +86,8 @@ class Settings(BaseSettings):
             raise ValueError("DEFAULT_TOP_K cannot be greater than MAX_TOP_K")
         if self.RERANK_CANDIDATE_K > self.MAX_TOP_K:
             raise ValueError("RERANK_CANDIDATE_K cannot be greater than MAX_TOP_K")
+        if self.MIN_QUERY_LENGTH >= self.MAX_QUERY_LENGTH:
+            raise ValueError("MIN_QUERY_LENGTH must be strictly smaller than MAX_QUERY_LENGTH")
         return self
 
 

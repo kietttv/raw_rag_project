@@ -11,6 +11,10 @@ from fastapi.responses import StreamingResponse
 from src.config import settings
 from src.core.generator import generate_answer, stream_answer
 from src.core.retriever import retrieve
+from src.guardrails.input_guard import (
+    InputGuardViolationError,
+    validate_chat_input,
+)
 from src.models.schemas import (
     ChatMessage,
     ChatRequest,
@@ -76,6 +80,18 @@ def chat_endpoint(request: ChatRequest):
     - **stream=false**: Returns a JSON `ChatResponse` containing answer and source references.
     - **stream=true**: Returns a `text/event-stream` delivering `sources`, `token`, and `done` events.
     """
+    # 0. Validate input against security guardrails (Prompt Injection, Out-of-Scope, Bounds)
+    try:
+        clean_query = validate_chat_input(request.query, request.history)
+    except InputGuardViolationError as guard_err:
+        logger.bind(reason=guard_err.reason, rule=guard_err.matched_rule).warning(
+            "Chat request rejected by input guardrail"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=guard_err.reason,
+        )
+
     # 1. Extract and trim history to MAX_HISTORY_TURNS
     max_turns = settings.MAX_HISTORY_TURNS
     trimmed_history: list[ChatMessage] = []
@@ -86,7 +102,7 @@ def chat_endpoint(request: ChatRequest):
     # 1.1 Check Redis Query Cache for standalone questions (0 API calls on cache hit)
     if not trimmed_history and settings.ENABLE_QUERY_CACHE:
         cached_resp = cache_service.get_cached_response(
-            query=request.query,
+            query=clean_query,
             collection_name=request.collection_name,
             top_k=request.top_k,
         )
@@ -112,7 +128,7 @@ def chat_endpoint(request: ChatRequest):
     # 2. Retrieve relevant documents
     try:
         sources = retrieve(
-            query=request.query,
+            query=clean_query,
             top_k=request.top_k,
             min_score=request.min_score,
             collection_name=request.collection_name,
@@ -123,7 +139,7 @@ def chat_endpoint(request: ChatRequest):
             detail=str(val_err),
         )
     except Exception as exc:
-        logger.bind(query=request.query).exception(f"Retrieval failed: {exc}")
+        logger.bind(query=clean_query).exception(f"Retrieval failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Retrieval service failed or vector database unreachable",
@@ -133,20 +149,20 @@ def chat_endpoint(request: ChatRequest):
     if not request.stream:
         try:
             resp = generate_answer(
-                query=request.query,
+                query=clean_query,
                 sources=sources,
                 history=trimmed_history,
             )
             if not trimmed_history and settings.ENABLE_QUERY_CACHE:
                 cache_service.set_cached_response(
-                    query=request.query,
+                    query=clean_query,
                     response=resp,
                     collection_name=request.collection_name,
                     top_k=request.top_k,
                 )
             return resp
         except Exception as exc:
-            logger.bind(query=request.query).exception(f"LLM generation failed: {exc}")
+            logger.bind(query=clean_query).exception(f"LLM generation failed: {exc}")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="LLM generation service failed to produce an answer",
@@ -155,7 +171,7 @@ def chat_endpoint(request: ChatRequest):
     # 4. Branch: streaming response via Server-Sent Events
     return StreamingResponse(
         _generate_sse_stream(
-            query=request.query,
+            query=clean_query,
             sources=sources,
             history=trimmed_history,
         ),
