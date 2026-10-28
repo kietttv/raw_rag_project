@@ -7,7 +7,7 @@ Formats retrieved contexts into a standard prompt template, calls Gemini
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, Iterator
 
 from google import genai
 from google.genai import types
@@ -21,14 +21,14 @@ from tenacity import (
 from src.config import settings
 from src.core.ingestion import _is_retryable_exception, get_genai_client
 from src.core.retriever import retrieve
-from src.models.schemas import ChatResponse, SourceDocument
+from src.models.schemas import ChatMessage, ChatResponse, SourceDocument
 from src.utils.logger import logger
 
 RAG_PROMPT_TEMPLATE = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp dưới đây.
 
 NGỮ CẢNH (Context):
 {context}
-
+{history_block}
 CÂU HỎI (Question):
 {question}
 
@@ -65,23 +65,54 @@ def format_context(sources: list[SourceDocument]) -> str:
     return "\n\n".join(blocks)
 
 
+def format_history(history: list[ChatMessage] | None) -> str:
+    """Format previous conversation turns into a readable dialogue block."""
+    if not history:
+        return ""
+    lines: list[str] = ["\nLỊCH SỬ HỘI THOẠI (Conversation History):"]
+    for msg in history:
+        role_label = "Người dùng" if msg.role == "user" else "Trợ lý"
+        lines.append(f"{role_label}: {msg.content.strip()}")
+    return "\n".join(lines) + "\n"
+
+
 def build_prompt(
     query: str,
     sources: list[SourceDocument],
+    history: list[ChatMessage] | None = None,
     template: str = RAG_PROMPT_TEMPLATE,
 ) -> str:
-    """Combine context and user query into formatted prompt string.
+    """Combine context, history, and user query into formatted prompt string.
 
     Args:
         query: User question.
         sources: Context documents.
+        history: Optional previous conversation messages.
         template: Prompt template containing {context} and {question}.
 
     Returns:
         str: Ready-to-send prompt.
     """
     context_text = format_context(sources)
-    return template.format(context=context_text, question=query.strip())
+    history_text = format_history(history)
+
+    if "{history_block}" in template:
+        return template.format(
+            context=context_text,
+            history_block=history_text,
+            question=query.strip(),
+        )
+    elif "{history}" in template:
+        return template.format(
+            context=context_text,
+            history=history_text,
+            question=query.strip(),
+        )
+    else:
+        prompt = template.format(context=context_text, question=query.strip())
+        if history_text and "CÂU HỎI (Question):" in prompt:
+            prompt = prompt.replace("CÂU HỎI (Question):", f"{history_text}\nCÂU HỎI (Question):")
+        return prompt
 
 
 @retry(
@@ -105,9 +136,28 @@ def _generate_with_retry(client: genai.Client, prompt: str) -> str:
     return response.text.strip()
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception(_is_retryable_exception),
+    reraise=True,
+)
+def _open_stream_with_retry(client: genai.Client, prompt: str):
+    """Open streaming generation connection to Gemini with retry on initial failure."""
+    config = types.GenerateContentConfig(
+        temperature=settings.GENERATION_TEMPERATURE,
+    )
+    return client.models.generate_content_stream(
+        model=settings.GENERATION_MODEL_NAME,
+        contents=prompt,
+        config=config,
+    )
+
+
 def generate_answer(
     query: str,
     sources: list[SourceDocument],
+    history: list[ChatMessage] | None = None,
     template: str = RAG_PROMPT_TEMPLATE,
 ) -> ChatResponse:
     """Generate answer from user query and list of retrieved source documents.
@@ -115,6 +165,7 @@ def generate_answer(
     Args:
         query: User question.
         sources: Context documents retrieved for this question.
+        history: Optional previous conversation messages.
         template: Optional custom prompt template.
 
     Returns:
@@ -128,11 +179,12 @@ def generate_answer(
         raise ValueError("Query must not be empty")
 
     client = get_genai_client()
-    prompt = build_prompt(cleaned_query, sources, template=template)
+    prompt = build_prompt(cleaned_query, sources, history=history, template=template)
 
     logger.bind(
         query=cleaned_query,
         sources_count=len(sources),
+        has_history=bool(history),
         model=settings.GENERATION_MODEL_NAME,
         temperature=settings.GENERATION_TEMPERATURE,
     ).debug("Sending prompt to Gemini for answer generation")
@@ -151,11 +203,53 @@ def generate_answer(
     )
 
 
+def stream_answer(
+    query: str,
+    sources: list[SourceDocument],
+    history: list[ChatMessage] | None = None,
+    template: str = RAG_PROMPT_TEMPLATE,
+) -> Iterator[str]:
+    """Stream generated answer tokens one chunk at a time.
+
+    Args:
+        query: User question.
+        sources: Retrieved context documents.
+        history: Optional previous conversation messages.
+        template: Optional custom prompt template.
+
+    Yields:
+        str: Answer token text chunks.
+
+    Raises:
+        ValueError: If query is empty or whitespace-only.
+    """
+    cleaned_query = (query or "").strip()
+    if not cleaned_query:
+        raise ValueError("Query must not be empty")
+
+    client = get_genai_client()
+    prompt = build_prompt(cleaned_query, sources, history=history, template=template)
+
+    logger.bind(
+        query=cleaned_query,
+        sources_count=len(sources),
+        has_history=bool(history),
+        model=settings.GENERATION_MODEL_NAME,
+        stream=True,
+    ).debug("Streaming prompt to Gemini for answer generation")
+
+    stream_response = _open_stream_with_retry(client, prompt)
+    for chunk in stream_response:
+        if chunk.text:
+            yield chunk.text
+
+
 def generate_rag_response(
     query: str,
     top_k: int | None = None,
     min_score: float | None = None,
     collection_name: str | None = None,
+    history: list[ChatMessage] | None = None,
 ) -> ChatResponse:
     """Execute full RAG generation pipeline: retrieve sources -> generate answer.
 
@@ -164,6 +258,7 @@ def generate_rag_response(
         top_k: Number of chunks to retrieve (defaults to settings.DEFAULT_TOP_K).
         min_score: Optional similarity score threshold.
         collection_name: Optional target collection name in ChromaDB.
+        history: Optional previous conversation messages.
 
     Returns:
         ChatResponse: Generated answer accompanied by source chunks.
@@ -174,11 +269,18 @@ def generate_rag_response(
         min_score=min_score,
         collection_name=collection_name,
     )
-    return generate_answer(query=query, sources=sources)
+    return generate_answer(query=query, sources=sources, history=history)
 
 
 def main() -> None:
     """CLI entrypoint for asking questions and generating RAG answers."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(
         description="Generate grounded answers using RAG pipeline (Gemini + ChromaDB)."
     )

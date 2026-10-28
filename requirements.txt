@@ -6,4 +6,9 @@ google-genai>=1.0.0
 pypdf>=5.0.0
 langchain-text-splitters>=0.3.0
 tenacity>=8.2.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+httpx>=0.27.0
 pytest>=8.0
+

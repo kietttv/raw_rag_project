@@ -112,6 +112,13 @@ def retrieve(
 
 def main() -> None:
     """CLI entrypoint for vector search retrieval."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(
         description="Retrieve relevant chunks from ChromaDB for a given query."
     )

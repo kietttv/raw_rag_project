@@ -1,5 +1,7 @@
 """Pydantic schemas for API requests and responses."""
 
+from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
@@ -25,6 +27,9 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User question")
     history: list[ChatMessage] = Field(default_factory=list, description="Previous conversation turns")
     top_k: int = Field(5, ge=1, le=50, description="Number of chunks to retrieve")
+    collection_name: str | None = Field(None, description="Target ChromaDB collection (defaults to settings)")
+    min_score: float | None = Field(None, ge=-1.0, le=1.0, description="Minimum relevance score threshold")
+    stream: bool = Field(False, description="Stream response tokens in real-time via Server-Sent Events")
 
 
 class ChatResponse(BaseModel):
@@ -57,4 +62,38 @@ class IngestResponse(BaseModel):
     documents_processed: int = Field(..., ge=0, description="Number of documents successfully processed")
     chunks_created: int = Field(..., ge=0, description="Total number of chunks produced and embedded")
     message: str | None = Field(None, description="Status detail or error message if any")
+
+
+class TaskStatus(str, Enum):
+    """Execution status of an asynchronous background task."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class IngestTaskResponse(BaseModel):
+    """Response payload returned immediately upon submitting an ingestion task."""
+
+    task_id: str = Field(..., description="Unique identifier for the background task")
+    status: TaskStatus = Field(default=TaskStatus.PENDING, description="Current task state")
+    file_name: str = Field(..., description="Name of the uploaded file")
+    message: str = Field("File accepted for processing", description="Human-readable status summary")
+
+
+class IngestTaskDetail(BaseModel):
+    """Detailed response payload returned when polling an ingestion task's status."""
+
+    task_id: str = Field(..., description="Unique identifier for the background task")
+    status: TaskStatus = Field(..., description="Current task state")
+    file_name: str = Field(..., description="Name of the uploaded file")
+    collection_name: str = Field(..., description="Target ChromaDB collection")
+    files_processed: int | None = Field(None, description="Number of files successfully processed")
+    chunks_created: int | None = Field(None, description="Number of chunks embedded and stored")
+    failed_files: list[str] = Field(default_factory=list, description="List of failed file names/paths")
+    error: str | None = Field(None, description="Error message if the task failed")
+    created_at: datetime = Field(..., description="Timestamp when task was received")
+    updated_at: datetime = Field(..., description="Timestamp when task status was last updated")
+
 
