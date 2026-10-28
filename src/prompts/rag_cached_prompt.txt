@@ -1,0 +1,7 @@
+NGỮ CẢNH TRUY XUẤT (Retrieved Context):
+{context}
+{history_block}
+CÂU HỎI (Question):
+{question}
+
+CÂU TRẢ LỜI:

@@ -186,3 +186,130 @@ def test_stream_answer_yields_tokens() -> None:
         tokens = list(generator.stream_answer("Chào bạn", docs))
         assert tokens == ["Xin ", "chào!"]
 
+
+def test_get_or_create_context_cache_creates_and_reuses() -> None:
+    """get_or_create_context_cache creates a Gemini cache once and reuses it on subsequent calls."""
+    generator.reset_context_cache()
+
+    mock_client = MagicMock()
+    mock_cache = MagicMock()
+    mock_cache.name = "cachedContents/sample-cache-123"
+    mock_client.caches.create.return_value = mock_cache
+
+    static_text = "Tài liệu quy chế bảo mật thông tin nội bộ của công ty..."
+
+    # Call 1: creates cache
+    c1 = generator.get_or_create_context_cache(mock_client, static_context=static_text)
+    assert c1 == "cachedContents/sample-cache-123"
+    assert mock_client.caches.create.call_count == 1
+
+    # Call 2: reuses existing cache from RAM without calling API
+    c2 = generator.get_or_create_context_cache(mock_client, static_context=static_text)
+    assert c2 == "cachedContents/sample-cache-123"
+    assert mock_client.caches.create.call_count == 1
+
+    generator.reset_context_cache()
+
+
+def test_get_or_create_context_cache_fallback_on_api_error() -> None:
+    """get_or_create_context_cache falls back to None and skips repeat failures if API rejects cache."""
+    generator.reset_context_cache()
+
+    mock_client = MagicMock()
+    mock_client.caches.create.side_effect = RuntimeError("400 Cached content is too small")
+
+    static_text = "Short text"
+
+    # Call 1: fails and catches exception
+    c1 = generator.get_or_create_context_cache(mock_client, static_context=static_text)
+    assert c1 is None
+    assert mock_client.caches.create.call_count == 1
+
+    # Call 2: remembered as failed hash, skips calling API again
+    c2 = generator.get_or_create_context_cache(mock_client, static_context=static_text)
+    assert c2 is None
+    assert mock_client.caches.create.call_count == 1
+
+    generator.reset_context_cache()
+
+
+def test_generate_answer_with_context_cache() -> None:
+    """generate_answer sends cached_content in GenerateContentConfig when cache is available."""
+    docs = [
+        SourceDocument(content="Retrieved dynamic chunk", metadata={"chunk_id": "c1"})
+    ]
+
+    mock_response = MagicMock()
+    mock_response.text = "Answer generated with context cache."
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("src.core.generator.get_genai_client", return_value=mock_client), \
+         patch("src.core.generator.get_or_create_context_cache", return_value="cachedContents/cached-abc"):
+
+        res = generator.generate_answer(
+            query="Câu hỏi cần trả lời",
+            sources=docs,
+            use_context_cache=True,
+            static_context="Tài liệu tĩnh",
+        )
+
+        assert res.answer == "Answer generated with context cache."
+        mock_client.models.generate_content.assert_called_once()
+        _, kwargs = mock_client.models.generate_content.call_args
+        assert kwargs["config"].cached_content == "cachedContents/cached-abc"
+        # When cache is active, prompt only contains dynamic retrieved context, not full instructions
+        assert "NGỮ CẢNH TRUY XUẤT (Retrieved Context):" in kwargs["contents"]
+
+
+def test_stream_answer_with_context_cache() -> None:
+    """stream_answer sends cached_content in GenerateContentConfig during streaming."""
+    docs = [SourceDocument(content="Chunk stream test")]
+
+    chunk = MagicMock()
+    chunk.text = "Token streamed."
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content_stream.return_value = [chunk]
+
+    with patch("src.core.generator.get_genai_client", return_value=mock_client), \
+         patch("src.core.generator.get_or_create_context_cache", return_value="cachedContents/stream-cache-xyz"):
+
+        tokens = list(generator.stream_answer(
+            query="Câu hỏi stream",
+            sources=docs,
+            use_context_cache=True,
+            static_context="Tài liệu mẫu",
+        ))
+
+        assert tokens == ["Token streamed."]
+        mock_client.models.generate_content_stream.assert_called_once()
+        _, kwargs = mock_client.models.generate_content_stream.call_args
+        assert kwargs["config"].cached_content == "cachedContents/stream-cache-xyz"
+
+
+def test_load_static_context_file(tmp_path) -> None:
+    """load_static_context successfully reads contents from existing text file."""
+    static_file = tmp_path / "system_policy.txt"
+    static_file.write_text("Chính sách hệ thống toàn cầu năm 2026.", encoding="utf-8")
+
+    loaded = generator.load_static_context(static_file)
+    assert "Chính sách hệ thống toàn cầu năm 2026." in loaded
+
+    # Non-existing path returns empty string
+    assert generator.load_static_context("non_existent_path.txt") == ""
+
+
+def test_load_prompt_file_and_fallback() -> None:
+    """_load_prompt_file reads prompt from file and falls back to default if file is missing."""
+    # Existing prompt file
+    system_inst = generator._load_prompt_file("system_instruction.txt", "fallback text")
+    assert "Bạn là trợ lý AI trả lời câu hỏi" in system_inst
+
+    # Missing file uses fallback
+    fallback_result = generator._load_prompt_file("non_existent_prompt.txt", "my custom fallback")
+    assert fallback_result == "my custom fallback"
+
+
+

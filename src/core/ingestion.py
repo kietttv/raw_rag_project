@@ -426,6 +426,17 @@ def ingest_path(
         collection_name=target_collection,
     )
 
+    # Invalidate Redis query cache and BM25 index for updated collection
+    try:
+        from src.services import cache_service
+        cache_service.invalidate_collection_cache(target_collection)
+        from src.core.retriever import reset_bm25_cache
+        reset_bm25_cache()
+    except Exception as cache_err:
+        logger.bind(collection=target_collection, error=str(cache_err)).warning(
+            "Failed invalidating caches after document ingestion"
+        )
+
     distinct_files = len({c.metadata.get("source") for c in chunks})
     result = IngestResult(
         files_processed=distinct_files,
