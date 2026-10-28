@@ -12,4 +12,5 @@ os.environ.setdefault("EMBEDDING_BATCH_SIZE", "100")
 os.environ.setdefault("CHUNK_SIZE", "1000")
 os.environ.setdefault("CHUNK_OVERLAP", "200")
 os.environ.setdefault("CHROMA_COLLECTION_NAME", "test_collection")
-
+os.environ.setdefault("DEFAULT_TOP_K", "5")
+os.environ.setdefault("MAX_TOP_K", "50")

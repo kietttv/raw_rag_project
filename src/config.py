@@ -28,11 +28,15 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = Field(..., gt=0, description="Size of each chunk")
     CHUNK_OVERLAP: int = Field(..., ge=0, description="Overlap between consecutive chunks")
     CHROMA_COLLECTION_NAME: str = Field("documents", min_length=3, description="ChromaDB collection name")
+    DEFAULT_TOP_K: int = Field(5, gt=0, description="Default number of chunks to retrieve")
+    MAX_TOP_K: int = Field(50, gt=0, description="Maximum allowed chunks to retrieve")
 
     @model_validator(mode="after")
-    def _check_chunk_overlap(self) -> "Settings":
+    def _check_settings_consistency(self) -> "Settings":
         if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
             raise ValueError("CHUNK_OVERLAP should be smaller than CHUNK_SIZE")
+        if self.DEFAULT_TOP_K > self.MAX_TOP_K:
+            raise ValueError("DEFAULT_TOP_K cannot be greater than MAX_TOP_K")
         return self
 
 
@@ -41,7 +45,5 @@ def get_settings() -> Settings:
     """Trả về instance Settings (cache, chỉ đọc .env một lần)."""
     return Settings()
 
-
-settings = get_settings()
 
 settings = get_settings()
