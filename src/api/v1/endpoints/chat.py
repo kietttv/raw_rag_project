@@ -17,6 +17,7 @@ from src.models.schemas import (
     ChatResponse,
     SourceDocument,
 )
+from src.services import cache_service
 from src.utils.logger import logger
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -82,6 +83,32 @@ def chat_endpoint(request: ChatRequest):
         # Keep up to max_turns * 2 individual turns (user + assistant)
         trimmed_history = request.history[-(max_turns * 2) :]
 
+    # 1.1 Check Redis Query Cache for standalone questions (0 API calls on cache hit)
+    if not trimmed_history and settings.ENABLE_QUERY_CACHE:
+        cached_resp = cache_service.get_cached_response(
+            query=request.query,
+            collection_name=request.collection_name,
+            top_k=request.top_k,
+        )
+        if cached_resp is not None:
+            if not request.stream:
+                return cached_resp
+
+            def _stream_from_cache(cached: ChatResponse) -> Iterator[str]:
+                yield _format_sse("sources", [s.model_dump() for s in cached.sources])
+                yield _format_sse("token", {"text": cached.answer})
+                yield _format_sse("done", {"answer_length": len(cached.answer), "cached": True})
+
+            return StreamingResponse(
+                _stream_from_cache(cached_resp),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
     # 2. Retrieve relevant documents
     try:
         sources = retrieve(
@@ -105,11 +132,19 @@ def chat_endpoint(request: ChatRequest):
     # 3. Branch: non-streaming response
     if not request.stream:
         try:
-            return generate_answer(
+            resp = generate_answer(
                 query=request.query,
                 sources=sources,
                 history=trimmed_history,
             )
+            if not trimmed_history and settings.ENABLE_QUERY_CACHE:
+                cache_service.set_cached_response(
+                    query=request.query,
+                    response=resp,
+                    collection_name=request.collection_name,
+                    top_k=request.top_k,
+                )
+            return resp
         except Exception as exc:
             logger.bind(query=request.query).exception(f"LLM generation failed: {exc}")
             raise HTTPException(

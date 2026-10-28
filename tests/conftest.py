@@ -17,3 +17,14 @@ os.environ.setdefault("MAX_TOP_K", "50")
 os.environ.setdefault("GENERATION_MODEL_NAME", "gemini-3.5-flash")
 os.environ.setdefault("GENERATION_TEMPERATURE", "0.2")
 os.environ.setdefault("USE_RERANKER", "false")
+
+
+@pytest.fixture
+def client():
+    """Shared FastAPI TestClient fixture."""
+    from fastapi.testclient import TestClient
+    from src.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
+

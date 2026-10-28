@@ -432,19 +432,42 @@ def generate_rag_response(
     Returns:
         ChatResponse: Generated answer accompanied by source chunks.
     """
+    if not history and settings.ENABLE_QUERY_CACHE:
+        from src.services import cache_service
+
+        cached = cache_service.get_cached_response(
+            query=query,
+            collection_name=collection_name,
+            top_k=top_k,
+        )
+        if cached is not None:
+            return cached
+
     sources = retrieve(
         query=query,
         top_k=top_k,
         min_score=min_score,
         collection_name=collection_name,
     )
-    return generate_answer(
+    response = generate_answer(
         query=query,
         sources=sources,
         history=history,
         static_context=static_context,
         use_context_cache=use_context_cache,
     )
+
+    if not history and settings.ENABLE_QUERY_CACHE:
+        from src.services import cache_service
+
+        cache_service.set_cached_response(
+            query=query,
+            response=response,
+            collection_name=collection_name,
+            top_k=top_k,
+        )
+
+    return response
 
 
 def main() -> None:

@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     ENABLE_CONTEXT_CACHING: bool = Field(False, description="Enable Gemini Context Caching for static system documents")
     STATIC_CONTEXT_PATH: str = Field("", description="Optional file or directory path for static system documents to cache")
     CACHE_TTL_SECONDS: int = Field(3600, gt=60, description="TTL in seconds for Gemini cached content")
+    REDIS_URL: str = Field("redis://localhost:6379/0", description="Redis connection URL for query caching")
+    ENABLE_QUERY_CACHE: bool = Field(True, description="Enable Redis query/response caching")
+    QUERY_CACHE_TTL_SECONDS: int = Field(3600, gt=0, description="TTL in seconds for cached RAG responses")
+    ENABLE_SEMANTIC_CACHE: bool = Field(False, description="Enable semantic similarity matching in Redis query cache")
+    SEMANTIC_CACHE_THRESHOLD: float = Field(0.92, gt=0.0, le=1.0, description="Minimum cosine similarity for semantic cache hit")
+    SEMANTIC_CACHE_MAX_ENTRIES: int = Field(200, gt=0, description="Max cached embeddings per collection for semantic search")
 
 
     @model_validator(mode="after")
