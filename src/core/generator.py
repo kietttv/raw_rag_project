@@ -179,6 +179,13 @@ def generate_rag_response(
 
 def main() -> None:
     """CLI entrypoint for asking questions and generating RAG answers."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(
         description="Generate grounded answers using RAG pipeline (Gemini + ChromaDB)."
     )

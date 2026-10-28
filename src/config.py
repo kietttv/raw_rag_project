@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    BASE_DIR: Path = Field(default=BASE_DIR, description="Project root directory")
     GEMINI_API_KEY: SecretStr = Field(..., min_length=1, description="Gemini API key")
     VECTOR_DB_URL: str = Field(..., min_length=1, description="Vector database connection URL")
     EMBEDDING_MODEL_NAME: str = Field(..., min_length=1, description="Embedding model name")
@@ -38,6 +39,9 @@ class Settings(BaseSettings):
     MAX_TOP_K: int = Field(50, gt=0, description="Maximum allowed chunks to retrieve")
     GENERATION_MODEL_NAME: str = Field("gemini-3.5-flash", min_length=1, description="Gemini text generation model")
     GENERATION_TEMPERATURE: float = Field(0.2, ge=0.0, le=2.0, description="Temperature for generation")
+    UPLOAD_DIR: str = Field("data/uploads", description="Directory for temporary file uploads")
+    MAX_UPLOAD_MB: int = Field(20, gt=0, description="Maximum allowed upload file size in megabytes")
+
 
     @model_validator(mode="after")
     def _check_settings_consistency(self) -> "Settings":
