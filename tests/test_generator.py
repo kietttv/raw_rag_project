@@ -1,0 +1,144 @@
+"""Unit tests for src.core.generator module."""
+
+from unittest.mock import MagicMock, patch
+import pytest
+
+from src.core import generator
+from src.models.schemas import ChatResponse, SourceDocument
+
+
+def test_format_context_empty() -> None:
+    """format_context returns placeholder when sources list is empty."""
+    res = generator.format_context([])
+    assert "Không có tài liệu" in res
+
+
+def test_format_context_with_sources() -> None:
+    """format_context correctly numbers and prefixes documents."""
+    docs = [
+        SourceDocument(
+            content="Content of first chunk.",
+            score=0.92,
+            metadata={"file_name": "guide.pdf", "page": 4},
+        ),
+        SourceDocument(
+            content="Content of second chunk.",
+            score=0.81,
+            metadata={"source": "faq.txt"},
+        ),
+    ]
+
+    context = generator.format_context(docs)
+    assert "[1] Nguồn: guide.pdf, Trang 4" in context
+    assert "Content of first chunk." in context
+    assert "[2] Nguồn: faq.txt" in context
+    assert "Content of second chunk." in context
+
+
+def test_build_prompt() -> None:
+    """build_prompt injects context and question into the prompt template."""
+    docs = [
+        SourceDocument(
+            content="RAG stands for Retrieval-Augmented Generation.",
+            metadata={"file_name": "rag.txt"},
+        )
+    ]
+    prompt = generator.build_prompt("What is RAG?", docs)
+
+    assert "NGỮ CẢNH (Context):" in prompt
+    assert "RAG stands for Retrieval-Augmented Generation." in prompt
+    assert "CÂU HỎI (Question):" in prompt
+    assert "What is RAG?" in prompt
+
+
+def test_generate_answer_empty_query_raises_value_error() -> None:
+    """Empty or whitespace-only query raises ValueError."""
+    with pytest.raises(ValueError, match="Query must not be empty"):
+        generator.generate_answer("", [])
+
+    with pytest.raises(ValueError, match="Query must not be empty"):
+        generator.generate_answer("   \n\t  ", [])
+
+
+def test_generate_answer_success() -> None:
+    """generate_answer calls Gemini client and returns ChatResponse with sources."""
+    docs = [
+        SourceDocument(
+            content="Python 3.11 is faster than Python 3.10.",
+            score=0.89,
+            metadata={"file_name": "python.txt", "chunk_id": "c1"},
+        )
+    ]
+
+    mock_response = MagicMock()
+    mock_response.text = "Python 3.11 có tốc độ nhanh hơn Python 3.10."
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("src.core.generator.get_genai_client", return_value=mock_client):
+        res = generator.generate_answer("So sánh Python 3.11 và 3.10?", docs)
+
+        assert isinstance(res, ChatResponse)
+        assert res.answer == "Python 3.11 có tốc độ nhanh hơn Python 3.10."
+        assert len(res.sources) == 1
+        assert res.sources[0].metadata["chunk_id"] == "c1"
+        assert res.sources[0].score == 0.89
+
+        mock_client.models.generate_content.assert_called_once()
+        _, kwargs = mock_client.models.generate_content.call_args
+        assert kwargs["model"] == generator.settings.GENERATION_MODEL_NAME
+        assert kwargs["config"].temperature == generator.settings.GENERATION_TEMPERATURE
+
+
+def test_generate_rag_response_e2e() -> None:
+    """generate_rag_response links retriever output to generation."""
+    mock_docs = [
+        SourceDocument(
+            content="Retrieval Augmented Generation combines retrieval and LLM.",
+            score=0.91,
+            metadata={"file_name": "rag.pdf", "page": 1},
+        )
+    ]
+
+    with patch("src.core.generator.retrieve", return_value=mock_docs) as mock_ret, \
+         patch("src.core.generator._generate_with_retry", return_value="RAG là kỹ thuật kết hợp...") as mock_gen:
+        
+        res = generator.generate_rag_response("RAG là gì?", top_k=2)
+
+        mock_ret.assert_called_once_with(
+            query="RAG là gì?",
+            top_k=2,
+            min_score=None,
+            collection_name=None,
+        )
+        assert res.answer == "RAG là kỹ thuật kết hợp..."
+        assert res.sources == mock_docs
+
+
+def test_generator_cli_execution(capsys: pytest.CaptureFixture[str]) -> None:
+    """CLI formats and prints full RAG answer and cited sources."""
+    mock_res = ChatResponse(
+        answer="Hà Nội là thủ đô của Việt Nam.",
+        sources=[
+            SourceDocument(
+                content="Hà Nội là thủ đô và thành phố trực thuộc trung ương...",
+                score=0.96,
+                metadata={"file_name": "vietnam.txt", "chunk_id": "c_hanoi"},
+            )
+        ],
+    )
+
+    with patch("sys.argv", ["generator.py", "Thủ đô của Việt Nam là gì?", "--top-k", "2"]), \
+         patch("src.core.generator.generate_rag_response", return_value=mock_res):
+        
+        generator.main()
+        captured = capsys.readouterr()
+
+        assert "RAG ANSWER GENERATION REPORT" in captured.out
+        assert "QUESTION: Thủ đô của Việt Nam là gì?" in captured.out
+        assert "Hà Nội là thủ đô của Việt Nam." in captured.out
+        assert "SOURCES CITED (1 references):" in captured.out
+        assert "Score: 0.9600 | Source: vietnam.txt" in captured.out
+        assert "Chunk ID: c_hanoi" in captured.out
+

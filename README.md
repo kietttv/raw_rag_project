@@ -42,3 +42,9 @@ raw_rag_project/
         ├── __init__.py
         └── logger.py         # Cấu hình ghi log chuẩn (Structured Logging)
 ```
+conda activate raw-rag
+chroma run --path ./chroma_data --port 8000
+
+python -m src.core.ingestion data/samples
+
+python -m src.core.generator "Lợi ích của RAG là gì?" --top-k 3

@@ -1,10 +1,16 @@
 """Quản lý cấu hình hệ thống, đọc từ file .env bằng pydantic-settings."""
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Ensure local loopback bypasses system proxies (protecting against httpx socks proxy issues on Windows)
+_no_proxy = os.environ.get("NO_PROXY", "")
+if "localhost" not in _no_proxy:
+    os.environ["NO_PROXY"] = f"{_no_proxy},localhost,127.0.0.1".strip(",")
 
 # Thư mục gốc của project (chứa file .env)
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,6 +36,8 @@ class Settings(BaseSettings):
     CHROMA_COLLECTION_NAME: str = Field("documents", min_length=3, description="ChromaDB collection name")
     DEFAULT_TOP_K: int = Field(5, gt=0, description="Default number of chunks to retrieve")
     MAX_TOP_K: int = Field(50, gt=0, description="Maximum allowed chunks to retrieve")
+    GENERATION_MODEL_NAME: str = Field("gemini-3.5-flash", min_length=1, description="Gemini text generation model")
+    GENERATION_TEMPERATURE: float = Field(0.2, ge=0.0, le=2.0, description="Temperature for generation")
 
     @model_validator(mode="after")
     def _check_settings_consistency(self) -> "Settings":
