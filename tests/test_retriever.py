@@ -253,3 +253,35 @@ def test_retrieve_hybrid_boosts_exact_code() -> None:
         assert docs[1].metadata["chunk_id"] == "c_general"
 
 
+def test_retrieve_with_reranker_enabled() -> None:
+    """retrieve() with use_reranker=True queries RERANK_CANDIDATE_K chunks and calls reranker."""
+    dense_hits = [
+        {"id": f"c_{i}", "content": f"Chunk content {i}", "score": 0.80 - (i * 0.01), "metadata": {"chunk_id": f"c_{i}"}}
+        for i in range(25)
+    ]
+    mock_reranked = [
+        SourceDocument(content="Top chunk from reranker", score=0.99, metadata={"chunk_id": "c_99"}),
+        SourceDocument(content="Second top chunk", score=0.95, metadata={"chunk_id": "c_98"}),
+    ]
+
+    with patch("src.core.retriever.embed_query", return_value=[0.1] * 768), \
+         patch("src.services.vector_db.query_vectors", return_value=dense_hits) as mock_qv, \
+         patch("src.core.retriever.bm25_search", return_value=[]), \
+         patch("src.core.reranker.rerank", return_value=mock_reranked) as mock_rr:
+
+        docs = retriever.retrieve("Ai là giám đốc?", top_k=2, use_reranker=True)
+
+        assert docs == mock_reranked
+        # Verify query_vectors was called with fetch_k = settings.RERANK_CANDIDATE_K (25)
+        mock_qv.assert_called_once()
+        _, qv_kwargs = mock_qv.call_args
+        assert qv_kwargs["top_k"] == settings.RERANK_CANDIDATE_K
+
+        # Verify rerank was called with top_k = 2 and all candidates
+        mock_rr.assert_called_once()
+        rr_args, rr_kwargs = mock_rr.call_args
+        assert rr_kwargs["top_k"] == 2
+        assert len(rr_kwargs["documents"]) == 25
+
+
+

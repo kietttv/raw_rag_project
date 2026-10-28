@@ -269,8 +269,14 @@ def retrieve(
     use_hybrid: bool = True,
     rrf_k: int = 60,
     candidate_k: int | None = None,
+    use_reranker: bool | None = None,
 ) -> list[SourceDocument]:
-    """Retrieve top-k most relevant document chunks for a query using Hybrid Search (Vector + BM25 + RRF).
+    """Retrieve top-k most relevant document chunks for a query using Hybrid Search and optional Reranking.
+
+    Pipeline:
+    1. Candidate retrieval via Hybrid Search (Dense Vector + BM25 + RRF).
+       If use_reranker is enabled, retrieves Top 20-30 candidates (settings.RERANK_CANDIDATE_K).
+    2. CrossEncoder Reranking via BAAI/bge-reranker-v2-m3 (keeps Top 3-5).
 
     Args:
         query: Query string to search for.
@@ -280,7 +286,8 @@ def retrieve(
         collection_name: Optional target collection name in ChromaDB.
         use_hybrid: Whether to perform hybrid search (Dense + BM25 via RRF). Defaults to True.
         rrf_k: RRF constant parameter (defaults to 60).
-        candidate_k: Optional candidate pool size before fusion (defaults to top_k).
+        candidate_k: Optional candidate pool size before fusion/reranking.
+        use_reranker: Whether to run CrossEncoder reranking. Defaults to settings.USE_RERANKER.
 
     Returns:
         list[SourceDocument]: Ranked list of retrieved document chunks.
@@ -299,7 +306,14 @@ def retrieve(
         )
 
     target_collection = collection_name or settings.CHROMA_COLLECTION_NAME
-    fetch_k = candidate_k if candidate_k is not None else k
+    should_rerank = settings.USE_RERANKER if use_reranker is None else use_reranker
+
+    if candidate_k is not None:
+        fetch_k = candidate_k
+    elif should_rerank:
+        fetch_k = max(k, settings.RERANK_CANDIDATE_K)
+    else:
+        fetch_k = k
 
     logger.bind(
         query=cleaned_query,
@@ -307,6 +321,7 @@ def retrieve(
         fetch_k=fetch_k,
         collection=target_collection,
         use_hybrid=use_hybrid,
+        use_reranker=should_rerank,
     ).debug("Starting document retrieval")
 
     # 1. Dense Vector Search
@@ -337,21 +352,21 @@ def retrieve(
                 bm25_hits=bm25_hits,
                 rrf_k=rrf_k,
             )
-            final_hits = fused_hits[:k]
+            final_hits = fused_hits[:fetch_k]
         else:
             # Fallback to dense hits if no BM25 matches were found
-            final_hits = dense_hits[:k]
+            final_hits = dense_hits[:fetch_k]
     else:
-        final_hits = dense_hits[:k]
+        final_hits = dense_hits[:fetch_k]
 
-    # 3. Format as SourceDocument
-    documents: list[SourceDocument] = []
+    # 3. Format candidates as SourceDocument
+    candidate_documents: list[SourceDocument] = []
     for h in final_hits:
         meta = dict(h.get("metadata") or {})
         if "id" in h and "chunk_id" not in meta:
             meta["chunk_id"] = h["id"]
 
-        documents.append(
+        candidate_documents.append(
             SourceDocument(
                 content=h.get("content", ""),
                 score=h.get("score"),
@@ -359,12 +374,25 @@ def retrieve(
             )
         )
 
+    # 4. Optional Cross-Encoder Reranking
+    if should_rerank and candidate_documents:
+        from src.core.reranker import rerank
+
+        documents = rerank(
+            query=cleaned_query,
+            documents=candidate_documents,
+            top_k=k,
+        )
+    else:
+        documents = candidate_documents[:k]
+
     logger.bind(
         query=cleaned_query,
         top_k=k,
+        candidates=len(candidate_documents),
         returned=len(documents),
         collection=target_collection,
-        mode="hybrid" if (use_hybrid and final_hits and any("rrf_score" in d.metadata for d in documents)) else "vector_fallback",
+        reranked=should_rerank,
     ).info("Retrieved relevant documents")
 
     return documents
@@ -410,6 +438,11 @@ def main() -> None:
         action="store_true",
         help="Disable BM25 sparse search and run pure dense vector search.",
     )
+    parser.add_argument(
+        "--no-rerank",
+        action="store_true",
+        help="Disable CrossEncoder reranking stage.",
+    )
 
     args = parser.parse_args()
 
@@ -420,9 +453,14 @@ def main() -> None:
             min_score=args.min_score,
             collection_name=args.collection,
             use_hybrid=not args.no_hybrid,
+            use_reranker=not args.no_rerank,
         )
 
-        mode_label = "PURE DENSE VECTOR" if args.no_hybrid else "HYBRID (VECTOR + BM25 + RRF)"
+        mode_parts = []
+        mode_parts.append("DENSE" if args.no_hybrid else "HYBRID (DENSE+BM25+RRF)")
+        if not args.no_rerank:
+            mode_parts.append("RERANKED")
+        mode_label = " + ".join(mode_parts)
         print("\n" + "=" * 60)
         print(f"RETRIEVAL SEARCH RESULTS [{mode_label}]")
         print("=" * 60)
