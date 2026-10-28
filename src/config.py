@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     RERANKER_MODEL_NAME: str = Field("BAAI/bge-reranker-v2-m3", min_length=1, description="CrossEncoder reranker model name")
     RERANK_CANDIDATE_K: int = Field(25, gt=0, le=50, description="Number of candidates retrieved from Hybrid Search before reranking (Top 20-30)")
     RERANKER_MAX_LENGTH: int = Field(512, gt=0, le=8192, description="Max token length for CrossEncoder input pairs")
+    ENABLE_CONTEXT_CACHING: bool = Field(False, description="Enable Gemini Context Caching for static system documents")
+    STATIC_CONTEXT_PATH: str = Field("", description="Optional file or directory path for static system documents to cache")
+    CACHE_TTL_SECONDS: int = Field(3600, gt=60, description="TTL in seconds for Gemini cached content")
 
 
     @model_validator(mode="after")

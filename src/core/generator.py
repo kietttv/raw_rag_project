@@ -1,12 +1,17 @@
 """LLM Generator module for RAG core pipeline.
 
 Formats retrieved contexts into a standard prompt template, calls Gemini
-(gemini-3.5-flash) to generate grounded responses, and extracts source metadata.
+(gemini-3.5-flash) to generate grounded responses, extracts source metadata,
+and supports Gemini Context Caching for static system documents.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+from pathlib import Path
+import threading
+import time
 from typing import Any, Iterator
 
 from google import genai
@@ -24,6 +29,13 @@ from src.core.retriever import retrieve
 from src.models.schemas import ChatMessage, ChatResponse, SourceDocument
 from src.utils.logger import logger
 
+RAG_SYSTEM_INSTRUCTION = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp.
+
+HƯỚNG DẪN TRẢ LỜI:
+1. Chỉ sử dụng thông tin có trong phần NGỮ CẢNH để trả lời câu hỏi.
+2. Trả lời chính xác, rõ ràng, trung thực và có tính dẫn chứng theo tài liệu.
+3. Nếu ngữ cảnh không chứa đủ thông tin để trả lời câu hỏi, hãy nói rõ: "Tài liệu được cung cấp không có đủ thông tin để trả lời câu hỏi này." Tuyệt đối không tự suy diễn hoặc bịa đặt thông tin."""
+
 RAG_PROMPT_TEMPLATE = """Bạn là trợ lý AI trả lời câu hỏi dựa trên các tài liệu được cung cấp dưới đây.
 
 NGỮ CẢNH (Context):
@@ -38,6 +50,119 @@ HƯỚNG DẪN TRẢ LỜI:
 3. Nếu ngữ cảnh không chứa đủ thông tin để trả lời câu hỏi, hãy nói rõ: "Tài liệu được cung cấp không có đủ thông tin để trả lời câu hỏi này." Tuyệt đối không tự suy diễn hoặc bịa đặt thông tin.
 
 CÂU TRẢ LỜI:"""
+
+RAG_CACHED_PROMPT_TEMPLATE = """NGỮ CẢNH TRUY XUẤT (Retrieved Context):
+{context}
+{history_block}
+CÂU HỎI (Question):
+{question}
+
+CÂU TRẢ LỜI:"""
+
+
+class _ContextCacheState:
+    """In-memory cache manager for Gemini cached content resources."""
+
+    def __init__(self) -> None:
+        self.cache_name: str | None = None
+        self.expires_at: float = 0.0
+        self.content_hash: str = ""
+        self.failed_hashes: set[str] = set()
+
+
+_cache_state = _ContextCacheState()
+_cache_lock = threading.Lock()
+
+
+def reset_context_cache() -> None:
+    """Reset the in-memory context cache state (useful for tests or cache eviction)."""
+    global _cache_state
+    with _cache_lock:
+        _cache_state = _ContextCacheState()
+
+
+def load_static_context(path: str | Path | None = None) -> str:
+    """Load text content from a static reference file (.txt or .pdf) or directory."""
+    target_path = path or settings.STATIC_CONTEXT_PATH
+    if not target_path:
+        return ""
+    p = Path(target_path).resolve()
+    if not p.exists():
+        logger.bind(path=str(p)).warning("Static context path does not exist")
+        return ""
+
+    from src.core.ingestion import load_documents
+
+    docs, _ = load_documents(p)
+    return "\n\n".join([d.page_content for d in docs if d.page_content]).strip()
+
+
+def get_or_create_context_cache(
+    client: genai.Client,
+    static_context: str | None = None,
+    system_instruction: str = RAG_SYSTEM_INSTRUCTION,
+) -> str | None:
+    """Get or create a Gemini context cache for static system documents.
+
+    Returns:
+        str | None: Cache resource name (e.g. 'cachedContents/abc123') or None if caching is disabled / failed.
+    """
+    if not settings.ENABLE_CONTEXT_CACHING and not static_context:
+        return None
+
+    text = (static_context if static_context is not None else load_static_context()).strip()
+    if not text:
+        return None
+
+    raw_key = f"{settings.GENERATION_MODEL_NAME}:{system_instruction}:{text}"
+    content_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    now = time.monotonic()
+    with _cache_lock:
+        # Check if already marked as unsuitable (e.g. token count too small for Gemini API)
+        if content_hash in _cache_state.failed_hashes:
+            return None
+
+        # Check if current cache is still valid
+        if (
+            _cache_state.cache_name
+            and _cache_state.content_hash == content_hash
+            and now < _cache_state.expires_at
+        ):
+            return _cache_state.cache_name
+
+        # Create new Gemini context cache
+        try:
+            ttl_str = f"{settings.CACHE_TTL_SECONDS}s"
+            logger.bind(
+                model=settings.GENERATION_MODEL_NAME,
+                ttl=ttl_str,
+                text_len=len(text),
+            ).info("Creating Gemini context cache for static system documents")
+
+            cache = client.caches.create(
+                model=settings.GENERATION_MODEL_NAME,
+                config=types.CreateCachedContentConfig(
+                    display_name="rag_static_system_context",
+                    system_instruction=system_instruction,
+                    contents=[text],
+                    ttl=ttl_str,
+                ),
+            )
+            _cache_state.cache_name = cache.name
+            _cache_state.content_hash = content_hash
+            # Buffer 30 seconds before TTL expiration
+            _cache_state.expires_at = now + max(10, settings.CACHE_TTL_SECONDS - 30)
+            logger.bind(cache_name=cache.name, expires_in=settings.CACHE_TTL_SECONDS).info(
+                "Successfully created Gemini context cache"
+            )
+            return cache.name
+        except Exception as exc:
+            logger.bind(error=str(exc)).warning(
+                "Gemini context caching rejected or failed; falling back to standard prompt without cache"
+            )
+            _cache_state.failed_hashes.add(content_hash)
+            return None
 
 
 def format_context(sources: list[SourceDocument]) -> str:
@@ -121,10 +246,15 @@ def build_prompt(
     retry=retry_if_exception(_is_retryable_exception),
     reraise=True,
 )
-def _generate_with_retry(client: genai.Client, prompt: str) -> str:
+def _generate_with_retry(
+    client: genai.Client,
+    prompt: str,
+    cached_content: str | None = None,
+) -> str:
     """Call Gemini generate_content with tenacity retry logic on transient errors."""
     config = types.GenerateContentConfig(
         temperature=settings.GENERATION_TEMPERATURE,
+        cached_content=cached_content,
     )
     response = client.models.generate_content(
         model=settings.GENERATION_MODEL_NAME,
@@ -142,10 +272,15 @@ def _generate_with_retry(client: genai.Client, prompt: str) -> str:
     retry=retry_if_exception(_is_retryable_exception),
     reraise=True,
 )
-def _open_stream_with_retry(client: genai.Client, prompt: str):
+def _open_stream_with_retry(
+    client: genai.Client,
+    prompt: str,
+    cached_content: str | None = None,
+):
     """Open streaming generation connection to Gemini with retry on initial failure."""
     config = types.GenerateContentConfig(
         temperature=settings.GENERATION_TEMPERATURE,
+        cached_content=cached_content,
     )
     return client.models.generate_content_stream(
         model=settings.GENERATION_MODEL_NAME,
@@ -158,7 +293,9 @@ def generate_answer(
     query: str,
     sources: list[SourceDocument],
     history: list[ChatMessage] | None = None,
-    template: str = RAG_PROMPT_TEMPLATE,
+    template: str | None = None,
+    static_context: str | None = None,
+    use_context_cache: bool | None = None,
 ) -> ChatResponse:
     """Generate answer from user query and list of retrieved source documents.
 
@@ -167,6 +304,8 @@ def generate_answer(
         sources: Context documents retrieved for this question.
         history: Optional previous conversation messages.
         template: Optional custom prompt template.
+        static_context: Optional raw static text to cache on Gemini.
+        use_context_cache: Whether to use Gemini context caching (defaults to settings.ENABLE_CONTEXT_CACHING).
 
     Returns:
         ChatResponse: Generated answer text with source document citations.
@@ -179,22 +318,34 @@ def generate_answer(
         raise ValueError("Query must not be empty")
 
     client = get_genai_client()
-    prompt = build_prompt(cleaned_query, sources, history=history, template=template)
+
+    # Check and retrieve Gemini context cache if enabled
+    should_cache = use_context_cache if use_context_cache is not None else settings.ENABLE_CONTEXT_CACHING
+    cached_content_name: str | None = None
+    if should_cache or static_context:
+        cached_content_name = get_or_create_context_cache(client, static_context=static_context)
+
+    chosen_template = template or (
+        RAG_CACHED_PROMPT_TEMPLATE if cached_content_name else RAG_PROMPT_TEMPLATE
+    )
+    prompt = build_prompt(cleaned_query, sources, history=history, template=chosen_template)
 
     logger.bind(
         query=cleaned_query,
         sources_count=len(sources),
         has_history=bool(history),
+        cached_content=cached_content_name,
         model=settings.GENERATION_MODEL_NAME,
         temperature=settings.GENERATION_TEMPERATURE,
     ).debug("Sending prompt to Gemini for answer generation")
 
-    answer = _generate_with_retry(client, prompt)
+    answer = _generate_with_retry(client, prompt, cached_content=cached_content_name)
 
     logger.bind(
         query=cleaned_query,
         sources_count=len(sources),
         answer_length=len(answer),
+        cached=bool(cached_content_name),
     ).info("Successfully generated RAG answer")
 
     return ChatResponse(
@@ -207,7 +358,9 @@ def stream_answer(
     query: str,
     sources: list[SourceDocument],
     history: list[ChatMessage] | None = None,
-    template: str = RAG_PROMPT_TEMPLATE,
+    template: str | None = None,
+    static_context: str | None = None,
+    use_context_cache: bool | None = None,
 ) -> Iterator[str]:
     """Stream generated answer tokens one chunk at a time.
 
@@ -216,6 +369,8 @@ def stream_answer(
         sources: Retrieved context documents.
         history: Optional previous conversation messages.
         template: Optional custom prompt template.
+        static_context: Optional raw static text to cache on Gemini.
+        use_context_cache: Whether to use Gemini context caching (defaults to settings.ENABLE_CONTEXT_CACHING).
 
     Yields:
         str: Answer token text chunks.
@@ -228,17 +383,27 @@ def stream_answer(
         raise ValueError("Query must not be empty")
 
     client = get_genai_client()
-    prompt = build_prompt(cleaned_query, sources, history=history, template=template)
+
+    should_cache = use_context_cache if use_context_cache is not None else settings.ENABLE_CONTEXT_CACHING
+    cached_content_name: str | None = None
+    if should_cache or static_context:
+        cached_content_name = get_or_create_context_cache(client, static_context=static_context)
+
+    chosen_template = template or (
+        RAG_CACHED_PROMPT_TEMPLATE if cached_content_name else RAG_PROMPT_TEMPLATE
+    )
+    prompt = build_prompt(cleaned_query, sources, history=history, template=chosen_template)
 
     logger.bind(
         query=cleaned_query,
         sources_count=len(sources),
         has_history=bool(history),
+        cached_content=cached_content_name,
         model=settings.GENERATION_MODEL_NAME,
         stream=True,
     ).debug("Streaming prompt to Gemini for answer generation")
 
-    stream_response = _open_stream_with_retry(client, prompt)
+    stream_response = _open_stream_with_retry(client, prompt, cached_content=cached_content_name)
     for chunk in stream_response:
         if chunk.text:
             yield chunk.text
@@ -250,6 +415,8 @@ def generate_rag_response(
     min_score: float | None = None,
     collection_name: str | None = None,
     history: list[ChatMessage] | None = None,
+    static_context: str | None = None,
+    use_context_cache: bool | None = None,
 ) -> ChatResponse:
     """Execute full RAG generation pipeline: retrieve sources -> generate answer.
 
@@ -259,6 +426,8 @@ def generate_rag_response(
         min_score: Optional similarity score threshold.
         collection_name: Optional target collection name in ChromaDB.
         history: Optional previous conversation messages.
+        static_context: Optional raw static text to cache on Gemini.
+        use_context_cache: Whether to use Gemini context caching.
 
     Returns:
         ChatResponse: Generated answer accompanied by source chunks.
@@ -269,7 +438,13 @@ def generate_rag_response(
         min_score=min_score,
         collection_name=collection_name,
     )
-    return generate_answer(query=query, sources=sources, history=history)
+    return generate_answer(
+        query=query,
+        sources=sources,
+        history=history,
+        static_context=static_context,
+        use_context_cache=use_context_cache,
+    )
 
 
 def main() -> None:
@@ -307,6 +482,17 @@ def main() -> None:
         default=None,
         help="ChromaDB collection name (defaults to CHROMA_COLLECTION_NAME in .env).",
     )
+    parser.add_argument(
+        "--static-context",
+        type=str,
+        default=None,
+        help="Path to static system reference file to cache on Gemini.",
+    )
+    parser.add_argument(
+        "--enable-cache",
+        action="store_true",
+        help="Enable Gemini context caching for static context.",
+    )
 
     args = parser.parse_args()
 
@@ -316,6 +502,8 @@ def main() -> None:
             top_k=args.top_k,
             min_score=args.min_score,
             collection_name=args.collection,
+            static_context=load_static_context(args.static_context) if args.static_context else None,
+            use_context_cache=True if (args.enable_cache or args.static_context) else None,
         )
 
         print("\n" + "=" * 65)
@@ -354,4 +542,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
