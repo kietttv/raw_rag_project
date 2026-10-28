@@ -191,6 +191,48 @@ def query_vectors(
     return formatted_results
 
 
+def get_all_documents(
+    where: dict[str, Any] | None = None,
+    collection_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch all documents and metadata from a ChromaDB collection for BM25 indexing.
+
+    Args:
+        where: Optional metadata filter dictionary.
+        collection_name: Target collection name.
+
+    Returns:
+        list[dict[str, Any]]: List of dicts with keys: id, content, metadata.
+    """
+    collection = get_collection(collection_name)
+    kwargs: dict[str, Any] = {"include": ["documents", "metadatas"]}
+    if where:
+        kwargs["where"] = where
+
+    results = collection.get(**kwargs)
+
+    ids = results.get("ids") or []
+    docs = results.get("documents") or []
+    metas = results.get("metadatas") or []
+
+    items: list[dict[str, Any]] = []
+    for i, item_id in enumerate(ids):
+        items.append(
+            {
+                "id": item_id,
+                "content": docs[i] if i < len(docs) and docs[i] else "",
+                "metadata": metas[i] if (i < len(metas) and metas[i]) else {},
+            }
+        )
+
+    logger.bind(
+        collection=collection_name or settings.CHROMA_COLLECTION_NAME,
+        count=len(items),
+    ).debug("Fetched collection documents for BM25 indexing")
+
+    return items
+
+
 def reset_client() -> None:
     """Reset the singleton client instance (useful for unit tests)."""
     global _client
