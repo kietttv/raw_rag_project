@@ -97,6 +97,16 @@ class _ContextCacheState:
 
 _cache_state = _ContextCacheState()
 _cache_lock = threading.Lock()
+_thread_local = threading.local()
+
+
+def get_last_token_usage() -> dict[str, int]:
+    """Retrieve token usage metrics recorded from the most recent LLM call in current thread."""
+    return getattr(
+        _thread_local,
+        "last_usage",
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
 
 
 def reset_context_cache() -> None:
@@ -286,6 +296,18 @@ def _generate_with_retry(
         contents=prompt,
         config=config,
     )
+
+    # Extract and store token usage metrics if returned by Gemini API
+    usage_meta = getattr(response, "usage_metadata", None)
+    prompt_tokens = getattr(usage_meta, "prompt_token_count", 0) or 0
+    completion_tokens = getattr(usage_meta, "candidates_token_count", 0) or 0
+    total_tokens = getattr(usage_meta, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+    _thread_local.last_usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
     if not response.text:
         return ""
     return response.text.strip()

@@ -89,6 +89,26 @@ class Settings(BaseSettings):
         ge=1,
         description="Minimum meaningful alphanumeric character length of generated answer",
     )
+    ENABLE_TRACING: bool = Field(
+        False,
+        description="Enable LLMOps tracing via Langfuse",
+    )
+    LANGFUSE_PUBLIC_KEY: str = Field(
+        "",
+        description="Langfuse project public key",
+    )
+    LANGFUSE_SECRET_KEY: SecretStr = Field(
+        default=SecretStr(""),
+        description="Langfuse project secret key",
+    )
+    LANGFUSE_HOST: str = Field(
+        "https://cloud.langfuse.com",
+        description="Langfuse host URL",
+    )
+    LANGFUSE_RELEASE: str = Field(
+        "1.0.0",
+        description="Application release version for tracing",
+    )
 
 
     @model_validator(mode="after")
