@@ -376,13 +376,19 @@ def retrieve(
 
     # 4. Optional Cross-Encoder Reranking
     if should_rerank and candidate_documents:
-        from src.core.reranker import rerank
+        try:
+            from src.core.reranker import rerank
 
-        documents = rerank(
-            query=cleaned_query,
-            documents=candidate_documents,
-            top_k=k,
-        )
+            documents = rerank(
+                query=cleaned_query,
+                documents=candidate_documents,
+                top_k=k,
+            )
+        except Exception as rerank_err:
+            logger.bind(query=cleaned_query, error=str(rerank_err)).warning(
+                "CrossEncoder reranking failed; falling back to candidate documents (fail-open)"
+            )
+            documents = candidate_documents[:k]
     else:
         documents = candidate_documents[:k]
 

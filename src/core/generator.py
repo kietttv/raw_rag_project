@@ -290,6 +290,7 @@ def _generate_with_retry(
     config = types.GenerateContentConfig(
         temperature=settings.GENERATION_TEMPERATURE,
         cached_content=cached_content,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
     response = client.models.generate_content(
         model=settings.GENERATION_MODEL_NAME,
@@ -328,6 +329,7 @@ def _open_stream_with_retry(
     config = types.GenerateContentConfig(
         temperature=settings.GENERATION_TEMPERATURE,
         cached_content=cached_content,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
     return client.models.generate_content_stream(
         model=settings.GENERATION_MODEL_NAME,
