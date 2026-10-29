@@ -86,9 +86,9 @@ def run_test_pipeline(
         score_str = f"{doc.score:.4f}" if doc.score is not None else "N/A"
         source = doc.metadata.get("file_name") or doc.metadata.get("source") or "unknown"
         page = doc.metadata.get("page")
-        page_str = f" (Trang {page})" if page else ""
-        print(f"[{idx}] Score: {score_str} | Nguồn: {source}{page_str}")
-        print(f"    Nội dung trích đoạn: {doc.content.strip()[:180]}...\n")
+        page_str = f" (Page {page})" if page else ""
+        print(f"[{idx}] Score: {score_str} | Source: {source}{page_str}")
+        print(f"    Content snippet: {doc.content.strip()[:180]}...\n")
 
     # Final Validation Assertions
     assert len(response.answer.strip()) > 0, "Generated answer should not be empty"
